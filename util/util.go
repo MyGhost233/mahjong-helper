@@ -9,7 +9,21 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-func byteAtStr(b byte, s string) int {
+func Lower(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		c += 32
+	}
+	return c
+}
+
+func Upper(c byte) byte {
+	if c >= 'a' && c <= 'z' {
+		c -= 32
+	}
+	return c
+}
+
+func ByteAtStr(b byte, s string) int {
 	for i, _b := range []byte(s) {
 		if _b == b {
 			return i
@@ -19,6 +33,15 @@ func byteAtStr(b byte, s string) int {
 }
 
 func InInts(e int, arr []int) bool {
+	for _, _e := range arr {
+		if e == _e {
+			return true
+		}
+	}
+	return false
+}
+
+func InStrings(e string, arr []string) bool {
 	for _, _e := range arr {
 		if e == _e {
 			return true
@@ -66,7 +89,11 @@ func MaxInt(a, b int) int {
 	return b
 }
 
+func InDelta(a, b, delta float64) bool {
+	return math.Abs(a-b) < delta
+}
+
 func Equal(a, b float64) bool {
 	const eps = 1e-5
-	return math.Abs(a-b) < eps
+	return InDelta(a, b, eps)
 }

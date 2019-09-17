@@ -8,22 +8,46 @@ import (
 	"github.com/EndlessCheng/mahjong-helper/util/model"
 )
 
-func _printIncShantenResults14(shanten int, incShantenResults14 util.WaitsWithImproves14List, mixedRiskTable riskTable) {
-	if len(incShantenResults14) == 0 {
-		return
+func simpleBestDiscardTile(playerInfo *model.PlayerInfo) int {
+	shanten, results14, incShantenResults14 := util.CalculateShantenWithImproves14(playerInfo)
+	bestAttackDiscardTile := -1
+	if len(results14) > 0 {
+		bestAttackDiscardTile = results14[0].DiscardTile
+	} else if len(incShantenResults14) > 0 {
+		bestAttackDiscardTile = incShantenResults14[0].DiscardTile
+	} else {
+		return -1
 	}
-
-	if len(incShantenResults14[0].OpenTiles) > 0 {
-		fmt.Print("鸣牌后")
+	if shanten == 1 && len(playerInfo.DiscardTiles) < 9 && len(results14) > 0 && len(incShantenResults14) > 0 && !playerInfo.IsNaki() { // 鸣牌时的向听倒退暂不考虑
+		if results14[0].Result13.Waits.AllCount() < 9 && results14[0].Result13.MixedWaitsScore < incShantenResults14[0].Result13.MixedWaitsScore {
+			bestAttackDiscardTile = incShantenResults14[0].DiscardTile
+		}
 	}
-	fmt.Println(util.NumberToChineseShanten(shanten+1) + "：")
-	for _, result := range incShantenResults14 {
-		printWaitsWithImproves13_oneRow(result.Result13, result.DiscardTile, result.OpenTiles, mixedRiskTable)
-	}
+	return bestAttackDiscardTile
 }
 
-func analysisTiles34(playerInfo *model.PlayerInfo, mixedRiskTable riskTable) error {
-	humanTiles := util.Tiles34ToStr(playerInfo.HandTiles34)
+// TODO: 重构至 model
+func humanMeld(meld model.Meld) string {
+	humanMeld := util.TilesToStr(meld.Tiles)
+	if meld.MeldType == model.MeldTypeAnkan {
+		return strings.ToUpper(humanMeld)
+	}
+	return humanMeld
+}
+func humanHands(playerInfo *model.PlayerInfo) string {
+	humanHands := util.Tiles34ToStr(playerInfo.HandTiles34)
+	if len(playerInfo.Melds) > 0 {
+		humanHands += " " + model.SepMeld
+		for i := len(playerInfo.Melds) - 1; i >= 0; i-- {
+			humanHands += " " + humanMeld(playerInfo.Melds[i])
+		}
+	}
+	return humanHands
+}
+
+func analysisPlayerWithRisk(playerInfo *model.PlayerInfo, mixedRiskTable riskTable) error {
+	// 手牌
+	humanTiles := humanHands(playerInfo)
 	fmt.Println(humanTiles)
 	fmt.Println(strings.Repeat("=", len(humanTiles)))
 
@@ -31,31 +55,49 @@ func analysisTiles34(playerInfo *model.PlayerInfo, mixedRiskTable riskTable) err
 	switch countOfTiles % 3 {
 	case 1:
 		result := util.CalculateShantenWithImproves13(playerInfo)
-		fmt.Println(util.NumberToChineseShanten(result.Shanten) + "：")
-		printWaitsWithImproves13_oneRow(result, -1, nil, mixedRiskTable)
+		fmt.Println("当前" + util.NumberToChineseShanten(result.Shanten) + "：")
+		r := &analysisResult{
+			discardTile34:  -1,
+			result13:       result,
+			mixedRiskTable: mixedRiskTable,
+		}
+		r.printWaitsWithImproves13_oneRow()
 	case 2:
+		// 分析手牌
 		shanten, results14, incShantenResults14 := util.CalculateShantenWithImproves14(playerInfo)
 
+		// 提示信息
 		if shanten == -1 {
-			color.HiRed("【已胡牌】")
-			break
+			color.HiRed("【已和牌】")
+		} else if shanten == 0 {
+			if len(results14) > 0 {
+				r13 := results14[0].Result13
+				if r13.RiichiPoint > 0 && r13.FuritenRate == 0 && r13.DamaPoint >= 5200 && r13.DamaWaits.AllCount() == r13.Waits.AllCount() {
+					color.HiGreen("默听打点充足：追求和率默听，追求打点立直")
+				}
+				// 局收支相近时，提示：局收支相近，追求和率打xx，追求打点打xx
+			}
+		} else if shanten == 1 {
+			// 早巡中巡门清时，提醒向听倒退
+			if len(playerInfo.DiscardTiles) < 9 && !playerInfo.IsNaki() {
+				alertBackwardToShanten2(results14, incShantenResults14)
+			}
 		}
 
-		if shanten == 0 {
-			color.HiRed("【已听牌】")
-		}
+		// TODO: 接近流局时提示河底是哪家
 
-		fmt.Println(util.NumberToChineseShanten(shanten) + "：")
-		for _, result := range results14 {
-			printWaitsWithImproves13_oneRow(result.Result13, result.DiscardTile, result.OpenTiles, mixedRiskTable)
-		}
-		_printIncShantenResults14(shanten, incShantenResults14, mixedRiskTable)
+		// 何切分析结果
+		printResults14WithRisk(results14, mixedRiskTable)
+		printResults14WithRisk(incShantenResults14, mixedRiskTable)
 	default:
-		return fmt.Errorf("参数错误: %d 张牌", countOfTiles)
+		err := fmt.Errorf("参数错误: %d 张牌", countOfTiles)
+		if debugMode {
+			panic(err)
+		}
+		return err
 	}
 
 	fmt.Println()
-
 	return nil
 }
 
@@ -65,92 +107,137 @@ func analysisTiles34(playerInfo *model.PlayerInfo, mixedRiskTable riskTable) err
 // isRedFive: 此舍牌是否为赤5
 // allowChi: 是否能吃
 // mixedRiskTable: 危险度表
-func analysisMeld(playerInfo *model.PlayerInfo, targetTile34 int, isRedFive bool, allowChi bool, mixedRiskTable riskTable) {
+func analysisMeld(playerInfo *model.PlayerInfo, targetTile34 int, isRedFive bool, allowChi bool, mixedRiskTable riskTable) error {
+	if handsCount := util.CountOfTiles34(playerInfo.HandTiles34); handsCount%3 != 1 {
+		return fmt.Errorf("手牌错误：%d 张牌 %v", handsCount, playerInfo.HandTiles34)
+	}
 	// 原始手牌分析
 	result := util.CalculateShantenWithImproves13(playerInfo)
-
 	// 副露分析
 	shanten, results14, incShantenResults14 := util.CalculateMeld(playerInfo, targetTile34, isRedFive, allowChi)
-
 	if len(results14) == 0 && len(incShantenResults14) == 0 {
-		return
+		return nil // fmt.Errorf("输入错误：无法鸣这张牌")
 	}
 
-	raw := util.Tiles34ToStr(playerInfo.HandTiles34) + " + " + util.Tile34ToStr(targetTile34) + "?"
-	fmt.Println(raw)
-	fmt.Println(strings.Repeat("=", len(raw)))
+	// 鸣牌
+	humanTiles := humanHands(playerInfo)
+	handsTobeNaki := humanTiles + " " + model.SepTargetTile + " " + util.Tile34ToStr(targetTile34) + "?"
+	fmt.Println(handsTobeNaki)
+	fmt.Println(strings.Repeat("=", len(handsTobeNaki)))
 
+	// 原始手牌分析结果
 	fmt.Println("当前" + util.NumberToChineseShanten(result.Shanten) + "：")
-	printWaitsWithImproves13_oneRow(result, -1, nil, mixedRiskTable)
+	r := &analysisResult{
+		discardTile34:  -1,
+		result13:       result,
+		mixedRiskTable: mixedRiskTable,
+	}
+	r.printWaitsWithImproves13_oneRow()
 
+	// 提示信息
+	// TODO: 局收支相近时，提示：局收支相近，追求和率打xx，追求打点打xx
 	if shanten == -1 {
-		color.HiRed("【已胡牌】")
-		return
-	}
-
-	// 打印结果
-	// FIXME: 选择很多时如何精简何切选项？
-	const maxShown = 10
-
-	if len(results14) > 0 {
-		fmt.Println("鸣牌后" + util.NumberToChineseShanten(shanten) + "：")
-		shownResults14 := results14
-		if len(shownResults14) > maxShown {
-			shownResults14 = shownResults14[:maxShown]
-		}
-		for _, result := range shownResults14 {
-			printWaitsWithImproves13_oneRow(result.Result13, result.DiscardTile, result.OpenTiles, mixedRiskTable)
+		color.HiRed("【已和牌】")
+	} else if shanten <= 1 {
+		// 鸣牌后听牌或一向听，提示型听
+		if len(results14) > 0 && results14[0].LeftDrawTilesCount > 0 && results14[0].LeftDrawTilesCount <= 16 {
+			color.HiGreen("考虑型听？")
 		}
 	}
 
-	shownIncResults14 := incShantenResults14
-	if len(shownIncResults14) > maxShown {
-		shownIncResults14 = shownIncResults14[:maxShown]
-	}
-	_printIncShantenResults14(shanten, shownIncResults14, mixedRiskTable)
+	// TODO: 接近流局时提示河底是哪家
+
+	// 鸣牌何切分析结果
+	printResults14WithRisk(results14, mixedRiskTable)
+	printResults14WithRisk(incShantenResults14, mixedRiskTable)
+	return nil
 }
 
-func analysisHumanTiles(humanTilesInfo *model.HumanTilesInfo) (tiles34 []int, err error) {
-	humanTiles := humanTilesInfo.HumanTiles
-	doraTiles := []int{}
-	if humanTilesInfo.HumanDoraTiles != "" {
-		doraTiles = util.MustStrToTiles(humanTilesInfo.HumanDoraTiles)
-	}
-
-	splits := strings.Split(humanTiles, "+")
-	if len(splits) == 2 {
-		tiles34, err = util.StrToTiles34(splits[0])
-		if err != nil {
-			return
+func analysisHumanTiles(humanTilesInfo *model.HumanTilesInfo) (playerInfo *model.PlayerInfo, err error) {
+	defer func() {
+		if er := recover(); er != nil {
+			err = er.(error)
 		}
+	}()
 
-		rawTargetTile := strings.TrimSpace(splits[1])
-		if len(rawTargetTile) > 2 {
-			rawTargetTile = rawTargetTile[:2]
-		}
-		var targetTile34 int
-		targetTile34, err = util.StrToTile34(rawTargetTile)
-		if err != nil {
-			return
-		}
-
-		var melds []model.Meld
-		//melds = append(melds, model.Meld{MeldType: model.MeldTypePon, Tiles: util.MustStrToTiles("777z")})
-		playerInfo := model.NewSimplePlayerInfo(tiles34, melds)
-		playerInfo.DoraTiles = doraTiles
-		isRedFive := false
-		analysisMeld(playerInfo, targetTile34, isRedFive, true, nil)
+	if err = humanTilesInfo.SelfParse(); err != nil {
 		return
 	}
 
-	tiles34, err = util.StrToTiles34(humanTiles)
+	tiles34, numRedFives, err := util.StrToTiles34(humanTilesInfo.HumanTiles)
 	if err != nil {
 		return
 	}
 
-	playerInfo := model.NewSimplePlayerInfo(tiles34, nil)
-	playerInfo.DoraTiles = doraTiles
-	//playerInfo.IsTsumo = true
-	err = analysisTiles34(playerInfo, nil)
+	tileCount := util.CountOfTiles34(tiles34)
+	if tileCount > 14 {
+		return nil, fmt.Errorf("输入错误：%d 张牌", tileCount)
+	}
+
+	if tileCount%3 == 0 {
+		color.HiYellow("%s 是 %d 张牌\n助手随机补了一张牌", humanTilesInfo.HumanTiles, tileCount)
+		util.RandomAddTile(tiles34)
+	}
+
+	melds := []model.Meld{}
+	for _, humanMeld := range humanTilesInfo.HumanMelds {
+		tiles, _numRedFives, er := util.StrToTiles(humanMeld)
+		if er != nil {
+			return nil, er
+		}
+		isUpper := humanMeld[len(humanMeld)-1] <= 'Z'
+		var meldType int
+		switch {
+		case len(tiles) == 3 && tiles[0] != tiles[1]:
+			meldType = model.MeldTypeChi
+		case len(tiles) == 3 && tiles[0] == tiles[1]:
+			meldType = model.MeldTypePon
+		case len(tiles) == 4 && isUpper:
+			meldType = model.MeldTypeAnkan
+		case len(tiles) == 4 && !isUpper:
+			meldType = model.MeldTypeMinkan
+		default:
+			return nil, fmt.Errorf("输入错误: %s", humanMeld)
+		}
+		containRedFive := false
+		for i, c := range _numRedFives {
+			if c > 0 {
+				containRedFive = true
+				numRedFives[i] += c
+			}
+		}
+		melds = append(melds, model.Meld{
+			MeldType:       meldType,
+			Tiles:          tiles,
+			ContainRedFive: containRedFive,
+		})
+	}
+
+	playerInfo = model.NewSimplePlayerInfo(tiles34, melds)
+	playerInfo.NumRedFives = numRedFives
+
+	if humanTilesInfo.HumanDoraTiles != "" {
+		playerInfo.DoraTiles, _, err = util.StrToTiles(humanTilesInfo.HumanDoraTiles)
+		if err != nil {
+			return
+		}
+	}
+
+	if humanTilesInfo.HumanTargetTile != "" {
+		if tileCount%3 == 2 {
+			return nil, fmt.Errorf("输入错误: %s 是 %d 张牌", humanTilesInfo.HumanTiles, tileCount)
+		}
+		targetTile34, isRedFive, er := util.StrToTile34(humanTilesInfo.HumanTargetTile)
+		if er != nil {
+			return nil, er
+		}
+		if er := analysisMeld(playerInfo, targetTile34, isRedFive, true, nil); er != nil {
+			return nil, er
+		}
+		return
+	}
+
+	playerInfo.IsTsumo = humanTilesInfo.IsTsumo
+	err = analysisPlayerWithRisk(playerInfo, nil)
 	return
 }

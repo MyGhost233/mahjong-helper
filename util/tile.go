@@ -3,6 +3,7 @@ package util
 import (
 	"fmt"
 	"sort"
+	"math/rand"
 )
 
 var Mahjong = [...]string{
@@ -37,6 +38,23 @@ func (w Waits) AllCount() (count int) {
 		count += cnt
 	}
 	return count
+}
+
+// 剩余数不为零的进张
+func (w Waits) AvailableTiles() []int {
+	if len(w) == 0 {
+		return nil
+	}
+
+	tileIndexes := []int{}
+	for idx, left := range w {
+		if left > 0 {
+			tileIndexes = append(tileIndexes, idx)
+		}
+	}
+	sort.Ints(tileIndexes)
+
+	return tileIndexes
 }
 
 func (w Waits) indexes() []int {
@@ -94,6 +112,19 @@ func (w Waits) String() string {
 	return fmt.Sprintf("%d 进张 %s", w.AllCount(), TilesToStrWithBracket(w.indexes()))
 }
 
+func (w Waits) Equals(w1 Waits) bool {
+	tiles0, tiles1 := w.AvailableTiles(), w1.AvailableTiles()
+	if len(tiles0) != len(tiles1) {
+		return false
+	}
+	for i := range tiles0 {
+		if tiles0[i] != tiles1[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func isMan(tile int) bool {
 	return tile < 9
 }
@@ -112,6 +143,22 @@ func isYaochupai(tile int) bool {
 	}
 	t := tile % 9
 	return t == 0 || t == 8
+}
+
+// tiles34 为 13 张牌，判断 tile 若置于 tiles34 中是否是孤张
+func isIsolatedTile(tile int, tiles34 []int) bool {
+	if tile >= 27 {
+		return tiles34[tile] == 0
+	}
+	t := tile % 9
+	l := tile - t + MaxInt(0, t-2)
+	r := tile - t + MinInt(8, t+2)
+	for i := l; i <= r; i++ {
+		if tiles34[i] > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // 计算手牌枚数
@@ -154,46 +201,32 @@ func OutsideTiles(tile int) (outsideTiles []int) {
 	if tile >= 27 {
 		return
 	}
-	switch tile % 9 {
-	case 1, 2, 3:
+	switch tile%9 + 1 {
+	case 1, 9:
+		return
+	case 2, 3, 4:
 		for i := tile - tile%9; i < tile; i++ {
 			outsideTiles = append(outsideTiles, i)
 		}
-	case 4:
+	case 5:
 		// 早巡切5，37 比较安全（TODO 还有片筋A 46）
 		outsideTiles = append(outsideTiles, tile-2, tile+2)
-	case 5, 6, 7:
+	case 6, 7, 8:
 		for i := tile - tile%9 + 8; i > tile; i-- {
 			outsideTiles = append(outsideTiles, i)
 		}
+	default:
+		panic(fmt.Errorf("[OutsideTiles] 代码有误: tile = %d", tile))
 	}
 	return
 }
 
-// 根据宝牌指示牌计算出宝牌
-func DoraList(doraIndicators []int) (doraList []int) {
-	for _, doraIndicator := range doraIndicators {
-		var dora int
-		if doraIndicator < 27 { // mps
-			if doraIndicator%9 < 8 {
-				dora = doraIndicator + 1
-			} else {
-				dora = doraIndicator - 8
-			}
-		} else if doraIndicator < 31 { // 东南西北
-			if doraIndicator < 30 {
-				dora = doraIndicator + 1
-			} else {
-				dora = 27
-			}
-		} else {
-			if doraIndicator < 33 { // 白发中
-				dora = doraIndicator + 1
-			} else {
-				dora = 31
-			}
+// 随机补充一张牌
+func RandomAddTile(tiles34 []int) {
+	for {
+		if tile := rand.Intn(34); tiles34[tile] < 4 {
+			tiles34[tile]++
+			break
 		}
-		doraList = append(doraList, dora)
 	}
-	return
 }

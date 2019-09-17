@@ -71,37 +71,88 @@ func CalcPointTsumoSum(han int, fu int, yakumanTimes int, isParent bool) int {
 
 //
 
-// 已和牌，计算荣和点数（未考虑里宝）
-// 调用前请设置 WinTile
-// 无役时返回 0
-// TODO 注意：剩余不到 4 张无法立直
-func CalcRonPoint(playerInfo *model.PlayerInfo) (ronPoint int) {
-	for _, result := range DivideTiles34(playerInfo.HandTiles34) {
+type PointResult struct {
+	Point      int
+	FixedPoint float64 // 和牌时的期望点数
+
+	han          int
+	fu           int
+	yakumanTimes int
+	isParent     bool
+
+	divideResult *DivideResult
+	winTile      int
+	yakuTypes    []int
+	agariRate    float64 // 无役时的和率为 0
+}
+
+// 已和牌，计算自摸或荣和时的点数（不考虑里宝、一发等情况）
+// 无役时返回的点数为 0（和率也为 0）
+// 调用前请设置 IsTsumo WinTile
+func CalcPoint(playerInfo *model.PlayerInfo) (result *PointResult) {
+	result = &PointResult{}
+	isNaki := playerInfo.IsNaki()
+	var han, fu int
+	numDora := playerInfo.CountDora()
+	for _, divideResult := range DivideTiles34(playerInfo.HandTiles34) {
 		_hi := &_handInfo{
 			PlayerInfo:   playerInfo,
-			divideResult: result,
+			divideResult: divideResult,
 		}
-		yakuTypes := findYakuTypes(_hi)
+		yakuTypes := findYakuTypes(_hi, isNaki)
 		if len(yakuTypes) == 0 {
 			// 此手牌拆解下无役
 			continue
 		}
-		han := CalcYakuHan(yakuTypes, _hi.IsNaki())
-		han += _hi.CountDora()
-		fu := _hi.calcFu()
-		yakumanTimes := CalcYakumanTimes(yakuTypes)
-		point := CalcPointRon(han, fu, yakumanTimes, _hi.IsParent)
+		yakumanTimes := CalcYakumanTimes(yakuTypes, isNaki)
+		if yakumanTimes == 0 {
+			han = CalcYakuHan(yakuTypes, isNaki)
+			han += numDora
+			fu = _hi.calcFu(isNaki)
+		}
+		var pt int
+		if _hi.IsTsumo {
+			pt = CalcPointTsumoSum(han, fu, yakumanTimes, _hi.IsParent)
+		} else {
+			pt = CalcPointRon(han, fu, yakumanTimes, _hi.IsParent)
+		}
+		_result := &PointResult{
+			pt,
+			float64(pt),
+			han,
+			fu,
+			yakumanTimes,
+			_hi.IsParent,
+			divideResult,
+			_hi.WinTile,
+			yakuTypes,
+			0.0, // 后面会补上
+		}
 		// 高点法
-		ronPoint = MaxInt(ronPoint, point)
+		if pt > result.Point {
+			result = _result
+		} else if pt == result.Point {
+			if han > result.han {
+				result = _result
+			}
+		}
 	}
 	return
 }
 
-// 已听牌，计算加权和率后的平均荣和点数（未考虑里宝）
+// 已听牌，根据 playerInfo 提供的信息计算加权和率后的平均点数
 // 无役时返回 0
-// TODO 注意：剩余不到 4 张无法立直
-func CalcAvgRonPoint(playerInfo *model.PlayerInfo, waits Waits) (avgRonPoint float64) {
-	tileAgariRate := CalculateAgariRateOfEachTile(waits, playerInfo.DiscardTiles)
+// 有役时返回平均点数（立直时考虑自摸、一发和里宝）和各种侍牌下的对应点数
+func CalcAvgPoint(playerInfo model.PlayerInfo, waits Waits) (avgPoint float64, pointResults []*PointResult) {
+	isFuriten := playerInfo.IsFuriten(waits)
+	if isFuriten {
+		// 振听只能自摸，但是振听立直时考虑了这一点，所以只在默听或鸣牌时考虑
+		if !playerInfo.IsRiichi {
+			playerInfo.IsTsumo = true
+		}
+	}
+
+	tileAgariRate := CalculateAgariRateOfEachTile(waits, &playerInfo)
 	sum := 0.0
 	weight := 0.0
 	for tile, left := range waits {
@@ -110,32 +161,38 @@ func CalcAvgRonPoint(playerInfo *model.PlayerInfo, waits Waits) (avgRonPoint flo
 		}
 		playerInfo.HandTiles34[tile]++
 		playerInfo.WinTile = tile
-		ronPoint := CalcRonPoint(playerInfo)
+		result := CalcPoint(&playerInfo) // 非振听时，这里算出的是荣和的点数
 		playerInfo.HandTiles34[tile]--
-		if ronPoint > 0 { // 不考虑部分无役（如后附、片听）
-			rate := tileAgariRate[tile]
-			sum += float64(ronPoint) * rate
-			weight += rate
+		if result.Point == 0 {
+			// 不考虑部分无役（如后附、片听）
+			continue
 		}
+		pt := float64(result.Point)
+		if playerInfo.IsRiichi {
+			// 如果立直了，需要考虑自摸、一发和里宝
+			pt = result.fixedRiichiPoint(isFuriten)
+			result.FixedPoint = pt
+		}
+		w := tileAgariRate[tile]
+		sum += pt * w
+		weight += w
+		result.agariRate = w
+		pointResults = append(pointResults, result)
 	}
 	if weight > 0 {
-		avgRonPoint = sum / weight
+		avgPoint = sum / weight
 	}
 	return
 }
 
-// TODO: 考虑里宝
-func CalcAvgRiichiRonPoint(playerInfo *model.PlayerInfo, waits Waits) (avgRiichiRonPoint float64) {
+// 计算立直时的平均点数（考虑自摸、一发和里宝）和各种侍牌下的对应点数
+// 已鸣牌时返回 0
+// TODO: 剩余不到 4 张无法立直
+// TODO: 不足 1000 点无法立直
+func CalcAvgRiichiPoint(playerInfo model.PlayerInfo, waits Waits) (avgRiichiPoint float64, pointResults []*PointResult) {
 	if playerInfo.IsNaki() {
-		return 0
+		return 0, nil
 	}
-	savedIsRiichi := playerInfo.IsRiichi
 	playerInfo.IsRiichi = true
-	//playerInfo.AvgUraDora
-	avgRiichiRonPoint = CalcAvgRonPoint(playerInfo, waits)
-	playerInfo.IsRiichi = savedIsRiichi
-	return
+	return CalcAvgPoint(playerInfo, waits)
 }
-
-// TODO: 计算自摸点数
-// TODO: 振听只能自摸

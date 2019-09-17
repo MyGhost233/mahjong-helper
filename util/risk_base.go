@@ -1,5 +1,7 @@
 package util
 
+import "fmt"
+
 // 根据实际信息，某些牌的危险度远低于无筋（如现物、NC），这些牌可以用来计算筋牌的危险度
 // TODO: 早外产生的筋牌可能要单独计算
 func calcLowRiskTiles27(safeTiles34 []bool, leftTiles34 []int) []int {
@@ -43,6 +45,34 @@ func calcLowRiskTiles27(safeTiles34 []bool, leftTiles34 []int) []int {
 	return lowRiskTiles27
 }
 
+// 根据传入的舍牌，计算 mpz 各个牌的筋牌类型
+func calcTileType27(discardTiles []int) []tileType {
+	sujiType27 := make([]tileType, 27)
+
+	safeTiles34 := make([]int, 34)
+	// 0危险，1安全
+	for _, tile := range discardTiles {
+		safeTiles34[tile] = 1
+	}
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			idx := 9*i + j
+			sujiType27[idx] = TileTypeTable[j][safeTiles34[idx+3]]
+		}
+		for j := 3; j < 6; j++ {
+			idx := 9*i + j
+			mixSafeTile := safeTiles34[idx-3]<<1 | safeTiles34[idx+3]
+			sujiType27[idx] = TileTypeTable[j][mixSafeTile]
+		}
+		for j := 6; j < 9; j++ {
+			idx := 9*i + j
+			sujiType27[idx] = TileTypeTable[j][safeTiles34[idx-3]]
+		}
+	}
+
+	return sujiType27
+}
+
 type RiskTiles34 []float64
 
 // 根据巡目（对于对手而言）、现物、立直后通过的牌、NC、Dora，来计算基础铳率
@@ -67,15 +97,26 @@ func CalculateRiskTiles34(turns int, safeTiles34 []bool, leftTiles34 []int, dora
 		return multi
 	}
 
+	// 各个数牌的和牌方式
+	// 19 - 两面 对碰单骑
+	// 28 - 两面 坎张 对碰单骑
+	// 37 - 两面 坎张 边张 对碰单骑
+	// 456- 两面x2 坎张 对碰单骑
+
+	// 首先，根据现物和 No Chance 计算有没有两面的可能
 	// 生成用来计算筋牌的「安牌」
 	lowRiskTiles27 := calcLowRiskTiles27(safeTiles34, leftTiles34)
 	// 利用「安牌」计算无筋、筋、半筋、双筋的铳率
-	// TODO: 单独处理宣言牌的筋牌、宣言牌的同色牌的铳率
+	// TODO: 特殊处理宣言牌的筋牌、宣言牌的同色牌的铳率
 	for i := 0; i < 3; i++ {
 		for j := 0; j < 3; j++ {
 			idx := 9*i + j
 			t := TileTypeTable[j][lowRiskTiles27[idx+3]]
 			risk34[idx] = RiskRate[turns][t] * doraMulti(idx, t)
+			if j == 0 && safeTiles34[idx+3] && leftTiles34[idx] == 0 {
+				// (1) 两面 对碰单骑 都不可能 -> 安牌
+				risk34[idx] = 0
+			}
 		}
 		for j := 3; j < 6; j++ {
 			idx := 9*i + j
@@ -87,6 +128,10 @@ func CalculateRiskTiles34(turns int, safeTiles34 []bool, leftTiles34 []int, dora
 			idx := 9*i + j
 			t := TileTypeTable[j][lowRiskTiles27[idx-3]]
 			risk34[idx] = RiskRate[turns][t] * doraMulti(idx, t)
+			if j == 8 && safeTiles34[idx-3] && leftTiles34[idx] == 0 {
+				// (9) 两面 对碰单骑 都不可能 -> 安牌
+				risk34[idx] = 0
+			}
 		}
 		// 5断，37视作安牌筋
 		if leftTiles34[9*i+4] == 0 {
@@ -102,19 +147,23 @@ func CalculateRiskTiles34(turns int, safeTiles34 []bool, leftTiles34 []int, dora
 			t := HonorTileType[boolToInt(isYakuHai)][leftTiles34[i]-1]
 			risk34[i] = RiskRate[turns][t] * doraMulti(i, t)
 		} else {
-			// 剩余数为0可以视作安牌（只输国士）
+			// 剩余数为 0 可以视作安牌（忽略国士）
 			risk34[i] = 0
 		}
 	}
 
-	// 更新铳率表：NC牌的安牌
+	// TODO: 降级
+	// 如 1m 为壁，2m 变成无筋 19 等级，3m 变成无筋 28 等级
+
+	// 根据 No Chance 计算有没有两面的可能，完善上面的计算
+	// 更新铳率表：No Chance 的危险度
 	// 12和筋1差不多（2比1多10%）
 	// 3和筋2差不多
 	// 456和两筋差不多（存疑？）
 	ncSafeTile34 := CalcNCSafeTiles(leftTiles34)
 	for _, ncSafeTile := range ncSafeTile34 {
 		idx := ncSafeTile.Tile34
-		switch idx % 9 {
+		switch idx%9 + 1 {
 		case 1, 9:
 			t := tileTypeSuji19
 			risk34[idx] = RiskRate[turns][t] * doraMulti(idx, t)
@@ -130,18 +179,29 @@ func CalculateRiskTiles34(turns int, safeTiles34 []bool, leftTiles34 []int, dora
 		case 5:
 			t := tileTypeDoubleSuji5
 			risk34[idx] = RiskRate[turns][t] * doraMulti(idx, t)
+		default:
+			panic(fmt.Errorf("[CalculateRiskTiles34] 代码有误: ncSafeTile = %d", ncSafeTile.Tile34))
 		}
 	}
 
-	// 更新铳率表：DNC且剩余枚数为0的也当作安牌（忽略国士）
-	dncSafeTiles := CalcDNCSafeTiles(leftTiles34)
+	// 根据现物和 No Chance 计算是否只输对碰单骑，在这种情况下安全度和筋 19 差不多；若剩余枚数为 0 可直接视作现物（忽略国士）
+	// 更新铳率表：Double No Chance 的危险度
+	dncSafeTiles := CalcDNCSafeTilesWithDiscards(leftTiles34, safeTiles34)
 	for _, dncSafeTile := range dncSafeTiles {
-		if leftTiles34[dncSafeTile.Tile34] == 0 {
-			risk34[dncSafeTile.Tile34] = 0
+		tile := dncSafeTile.Tile34
+		if leftTiles34[tile] > 0 {
+			t := tileTypeSuji19
+			risk34[tile] = RiskRate[turns][t] * doraMulti(tile, t)
+			// 非19仍然有点断幺的危险，危险度 *1.1
+			if t9 := tile % 9; t9 > 0 && t9 < 8 {
+				risk34[tile] *= 1.1
+			}
+		} else {
+			risk34[tile] = 0
 		}
 	}
 
-	// 更新铳率表：现物的铳率为0
+	// 更新铳率表：现物的铳率为 0
 	for i, isSafe := range safeTiles34 {
 		if isSafe {
 			risk34[i] = 0
@@ -152,7 +212,7 @@ func CalculateRiskTiles34(turns int, safeTiles34 []bool, leftTiles34 []int, dora
 }
 
 // 对 5 巡前的外侧牌的危险度进行调整
-// 粗略调整为 *0.4 （科学する麻雀）
+// 粗略调整为 *0.4（参考：科学する麻雀）
 func (l RiskTiles34) FixWithEarlyOutside(discardTiles []int) RiskTiles34 {
 	for _, dTile := range discardTiles {
 		l[dTile] *= 0.4

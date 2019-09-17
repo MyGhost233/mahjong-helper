@@ -7,71 +7,68 @@ import (
 	"github.com/EndlessCheng/mahjong-helper/util/model"
 )
 
-func interact(raw string) {
-	tiles34, err := analysisHumanTiles(model.NewSimpleHumanTilesInfo(raw))
-	if err != nil {
-		errorExit(err)
+func interact(humanTilesInfo *model.HumanTilesInfo) error {
+	if !debugMode {
+		defer func() {
+			if err := recover(); err != nil {
+				fmt.Println("内部错误：", err)
+			}
+		}()
 	}
-	printed := true
-	countOfTiles := util.CountOfTiles34(tiles34)
 
+	playerInfo, err := analysisHumanTiles(humanTilesInfo)
+	if err != nil {
+		return err
+	}
+	tiles34 := playerInfo.HandTiles34
+	leftTiles34 := playerInfo.LeftTiles34
 	var tile string
 	for {
-		for {
-			if countOfTiles < 14 {
-				countOfTiles = 999
-				break
-			}
-			printed = false
-			fmt.Print("> 切 ")
-			fmt.Scanf("%s\n", &tile)
-			tile34, err := util.StrToTile34(tile)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-			} else {
-				if tiles34[tile34] == 0 {
-					fmt.Fprintln(os.Stderr, "切掉的牌不存在")
-				} else {
-					tiles34[tile34]--
-					break
-				}
-			}
-		}
-
-		if !printed {
-			raw = util.Tiles34ToStr(tiles34)
-			if _, err := analysisHumanTiles(model.NewSimpleHumanTilesInfo(raw)); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-			}
-
-			printed = true
-		}
-
-		for {
-			printed = false
-
+		count := util.CountOfTiles34(tiles34)
+		switch count % 3 {
+		case 0:
+			return fmt.Errorf("参数错误: %d 张牌", count)
+		case 1:
 			fmt.Print("> 摸 ")
 			fmt.Scanf("%s\n", &tile)
-			tile34, err := util.StrToTile34(tile)
+			tile, isRedFive, err := util.StrToTile34(tile)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-			} else {
-				if tiles34[tile34] == 4 {
-					fmt.Fprintln(os.Stderr, "不可能摸更多的牌了")
-				} else {
-					tiles34[tile34]++
-					break
-				}
+				// 让用户重新输入
+				fmt.Fprintln(os.Stderr, err)
+				continue
 			}
+			if tiles34[tile] == 4 {
+				// 让用户重新输入
+				fmt.Fprintln(os.Stderr, "不可能摸更多的牌了")
+				continue
+			}
+			if isRedFive {
+				playerInfo.NumRedFives[tile/9]++
+			}
+			leftTiles34[tile]--
+			tiles34[tile]++
+		case 2:
+			fmt.Print("> 切 ")
+			fmt.Scanf("%s\n", &tile)
+			tile, isRedFive, err := util.StrToTile34(tile)
+			if err != nil {
+				// 让用户重新输入
+				fmt.Fprintln(os.Stderr, err)
+				continue
+			}
+			if tiles34[tile] == 0 {
+				// 让用户重新输入
+				fmt.Fprintln(os.Stderr, "切掉的牌不存在")
+				continue
+			}
+			if isRedFive {
+				playerInfo.NumRedFives[tile/9]--
+			}
+			tiles34[tile]--
+			playerInfo.DiscardTiles = append(playerInfo.DiscardTiles, tile) // 仅判断振听用
 		}
-
-		if !printed {
-			raw = util.Tiles34ToStr(tiles34)
-			if _, err := analysisHumanTiles(model.NewSimpleHumanTilesInfo(raw)); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-			}
-
-			printed = true
+		if err := analysisPlayerWithRisk(playerInfo, nil); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 		}
 	}
 }
